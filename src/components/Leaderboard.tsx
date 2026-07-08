@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { LeaderboardEntry } from '../types';
-import { Trophy, Star, Medal, ArrowUp, Zap } from 'lucide-react';
+import { Trophy, Star, Medal, Zap, RefreshCw, Loader } from 'lucide-react';
+import { fetchGlobalLeaderboard } from '../utils/firebaseDb';
 
 interface LeaderboardProps {
   userCoins: number;
@@ -9,17 +10,17 @@ interface LeaderboardProps {
   level: number;
 }
 
-// Fixed competitive mock players
+// Fallback competitive mock players if database yields no records or is loading
 const MOCK_PLAYERS = [
-  { rank: 1, username: 'SpinMaster_Aarav', avatar: '🦁', coins: 15400, level: 24 },
-  { rank: 2, username: 'Lucky_Kiran', avatar: '⚡', coins: 12100, level: 19 },
-  { rank: 3, username: 'CoinHoarder99', avatar: '🐉', coins: 9500, level: 15 },
-  { rank: 4, username: 'Prisha_Queen', avatar: '👑', coins: 8200, level: 13 },
-  { rank: 5, username: 'Vihaan_Rider', avatar: '🏎️', coins: 6900, level: 11 },
-  { rank: 6, username: 'Ananya_Dreamer', avatar: '🌸', coins: 5400, level: 9 },
-  { rank: 7, username: 'Siddharth_Pro', avatar: '🎮', coins: 4100, level: 7 },
-  { rank: 8, username: 'Aditi_Lucky', avatar: '🦄', coins: 3200, level: 6 },
-  { rank: 9, username: 'Rohan_Spins', avatar: '🐺', coins: 2100, level: 4 },
+  { rank: 1, username: 'SpinMaster_Aarav', avatar: '🦁', coins: 15400, level: 24, isUser: false },
+  { rank: 2, username: 'Lucky_Kiran', avatar: '⚡', coins: 12100, level: 19, isUser: false },
+  { rank: 3, username: 'CoinHoarder99', avatar: '🐉', coins: 9500, level: 15, isUser: false },
+  { rank: 4, username: 'Prisha_Queen', avatar: '👑', coins: 8200, level: 13, isUser: false },
+  { rank: 5, username: 'Vihaan_Rider', avatar: '🏎️', coins: 6900, level: 11, isUser: false },
+  { rank: 6, username: 'Ananya_Dreamer', avatar: '🌸', coins: 5400, level: 9, isUser: false },
+  { rank: 7, username: 'Siddharth_Pro', avatar: '🎮', coins: 4100, level: 7, isUser: false },
+  { rank: 8, username: 'Aditi_Lucky', avatar: '🦄', coins: 3200, level: 6, isUser: false },
+  { rank: 9, username: 'Rohan_Spins', avatar: '🐺', coins: 2100, level: 4, isUser: false },
 ];
 
 export default function Leaderboard({
@@ -28,19 +29,56 @@ export default function Leaderboard({
   avatar,
   level,
 }: LeaderboardProps) {
+  const [onlinePlayers, setOnlinePlayers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadLeaderboard = async () => {
+    setLoading(true);
+    try {
+      const data = await fetchGlobalLeaderboard();
+      setOnlinePlayers(data);
+    } catch (e) {
+      console.warn('[Leaderboard] Failed to fetch online leaderboard, using mock data:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadLeaderboard();
+  }, [userCoins]);
+
   // Dynamically inject the user and sort based on coins
   const sortedLeaderboard = useMemo(() => {
-    const list: LeaderboardEntry[] = MOCK_PLAYERS.map((p) => ({ ...p }));
+    let list: LeaderboardEntry[] = [];
+
+    if (onlinePlayers && onlinePlayers.length > 0) {
+      // Map online players to leaderboard entry format
+      list = onlinePlayers.map((p, idx) => ({
+        rank: idx + 1,
+        username: p.username || 'Anonymous',
+        avatar: p.avatar || '👤',
+        coins: p.coins ?? 0,
+        level: p.level ?? 1,
+        isUser: p.username === username,
+      }));
+    } else {
+      // Map mock players
+      list = MOCK_PLAYERS.map((p) => ({ ...p }));
+    }
     
-    // Add the user
-    list.push({
-      rank: 10, // default placeholder
-      username: username || 'Guest Player',
-      avatar: avatar || '👤',
-      coins: userCoins,
-      isUser: true,
-      level: level,
-    });
+    // Check if the current user exists in the list already. If not, append them!
+    const userExists = list.some((e) => e.isUser || e.username === username);
+    if (!userExists) {
+      list.push({
+        rank: list.length + 1,
+        username: username || 'Guest Player',
+        avatar: avatar || '👑',
+        coins: userCoins,
+        isUser: true,
+        level: level,
+      });
+    }
 
     // Sort descending by coins
     list.sort((a, b) => b.coins - a.coins);
@@ -50,7 +88,7 @@ export default function Leaderboard({
       ...item,
       rank: index + 1,
     }));
-  }, [userCoins, username, avatar, level]);
+  }, [onlinePlayers, userCoins, username, avatar, level]);
 
   const userRankEntry = sortedLeaderboard.find((e) => e.isUser);
 
@@ -63,8 +101,22 @@ export default function Leaderboard({
             <Trophy className="w-5 h-5 text-amber-400" />
           </div>
           <div>
-            <h3 className="text-base font-extrabold text-white">Global Leaderboard</h3>
-            <p className="text-[10px] text-slate-400 font-medium">Real-time virtual standings</p>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-extrabold text-white">Global Leaderboard</h3>
+              <button
+                id="leaderboard-refresh-btn"
+                onClick={loadLeaderboard}
+                disabled={loading}
+                className="p-1 hover:bg-slate-800/50 rounded-full transition-colors text-slate-400 hover:text-white"
+              >
+                {loading ? (
+                  <Loader className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 font-medium">Real-time multiplayer standings</p>
           </div>
         </div>
         
@@ -78,12 +130,10 @@ export default function Leaderboard({
 
       {/* List */}
       <div className="flex flex-col gap-2 max-h-[280px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-amber-500/20">
-        {sortedLeaderboard.map((player) => {
-          const isTopThree = player.rank <= 3;
-          
+        {sortedLeaderboard.map((player, idx) => {
           return (
             <div
-              key={player.rank}
+              key={`${player.username}-${idx}`}
               className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
                 player.isUser
                   ? 'bg-gradient-to-r from-amber-500/15 to-amber-600/5 border-amber-400 shadow-[0_2px_8px_rgba(245,158,11,0.15)]'

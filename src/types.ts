@@ -11,6 +11,11 @@ export interface UserProfile {
   soundEnabled: boolean;
   hapticEnabled: boolean;
   spinsCountSinceLastAd?: number;
+  referralCode?: string;
+  referredBy?: string | null;
+  spinsCompleted?: number;
+  claimedAchievements?: string[];
+  lastShareTime?: string | null;
 }
 
 export type SectorType = 'coins' | 'extra_spin' | 'jackpot' | 'multiplier' | 'mystery';

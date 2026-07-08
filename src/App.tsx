@@ -12,6 +12,17 @@ import AdsPlaceholder, { RewardedAdModal } from './components/AdsPlaceholder';
 import { playClickSound, playCoinSound, playFanfareSound, triggerHapticFeedback } from './utils/audio';
 import { AdMobManager } from './utils/admob';
 
+// Firebase core + Auth + Db imports
+import { auth, onAuthStateChanged, signInAnonymously, User, signOut, isFirebaseConfigured, isFirebaseAvailable } from './utils/firebase';
+import { syncUserProfile, updateUserProfileInDb, submitTournamentScore } from './utils/firebaseDb';
+
+// Import New Subsystems
+import Auth from './components/Auth';
+import Achievements from './components/Achievements';
+import Tournaments from './components/Tournaments';
+import Referrals from './components/Referrals';
+import FirebaseSetupScreen from './components/FirebaseSetupScreen';
+
 // Lucide icon imports
 import {
   Disc,
@@ -24,14 +35,17 @@ import {
   PlusCircle,
   HelpCircle,
   Sparkles,
-  Award
+  Award,
+  Users,
+  ShieldAlert,
+  Database
 } from 'lucide-react';
 
 const LOCAL_STORAGE_PROFILE_KEY = 'kiran_lucky_spin_user_profile_v1';
 const LOCAL_STORAGE_LEDGER_KEY = 'kiran_lucky_spin_user_ledger_v1';
 
 const DEFAULT_PROFILE: UserProfile = {
-  username: 'Lucky_Kiran_Player',
+  username: 'Lucky_Spinner_Guest',
   avatar: '👑',
   coins: 500, // starting coins
   spinsRemaining: 5, // starting spins
@@ -43,6 +57,11 @@ const DEFAULT_PROFILE: UserProfile = {
   soundEnabled: true,
   hapticEnabled: true,
   spinsCountSinceLastAd: 0,
+  referralCode: '',
+  referredBy: null,
+  spinsCompleted: 0,
+  claimedAchievements: [],
+  lastShareTime: null,
 };
 
 const DEFAULT_TRANSACTIONS: Transaction[] = [
@@ -55,7 +74,7 @@ const DEFAULT_TRANSACTIONS: Transaction[] = [
   },
 ];
 
-type TabType = 'wheel' | 'daily' | 'leaderboard' | 'profile' | 'settings';
+type TabType = 'wheel' | 'daily' | 'leaderboard' | 'tournaments' | 'achievements' | 'referrals' | 'profile' | 'settings';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
@@ -65,6 +84,13 @@ export default function App() {
   const [showAdModal, setShowAdModal] = useState(false);
   const [showBuySpinsModal, setShowBuySpinsModal] = useState(false);
   const [levelUpAlert, setLevelUpAlert] = useState<{ show: boolean; level: number }>({ show: false, level: 1 });
+
+  // Multiplayer Online Auth States
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [rewardsSubTab, setRewardsSubTab] = useState<'achievements' | 'referrals'>('achievements');
+  const [showFirebaseInfoModal, setShowFirebaseInfoModal] = useState(false);
 
   // Load from LocalStorage
   useEffect(() => {
@@ -81,6 +107,40 @@ export default function App() {
     } catch (e) {
       console.warn('LocalStorage load failed', e);
     }
+  }, []);
+
+  // Firebase auth status listener
+  useEffect(() => {
+    if (!isFirebaseAvailable) {
+      setAuthLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setCurrentUser(user);
+        setAuthLoading(false);
+        try {
+          // Synchronize profile data with real Firestore db
+          const syncedProfile = await syncUserProfile(user.uid, profile);
+          setProfile(syncedProfile);
+        } catch (e) {
+          console.error('[App AuthSync] Profile fetch/sync failed:', e);
+        }
+      } else {
+        // Automatically provision an anonymous Guest session to prevent any UX friction
+        setCurrentUser(null);
+        setAuthLoading(true);
+        try {
+          await signInAnonymously(auth);
+        } catch (e) {
+          console.error('[App AuthSync] Auto-provision guest failed (falling back to offline local mode):', e);
+          setAuthLoading(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   // Initialize real AdMob for native mobile platforms
@@ -103,6 +163,9 @@ export default function App() {
       const updated = { ...prev, ...resolvedUpdates };
       try {
         localStorage.setItem(LOCAL_STORAGE_PROFILE_KEY, JSON.stringify(updated));
+        if (currentUser) {
+          updateUserProfileInDb(currentUser.uid, resolvedUpdates);
+        }
       } catch (e) {
         console.warn('LocalStorage save failed', e);
       }
@@ -129,16 +192,49 @@ export default function App() {
   };
 
   // Reset Game progress
-  const handleResetGameData = () => {
+  const handleResetGameData = async () => {
     setProfile(DEFAULT_PROFILE);
     setTransactions(DEFAULT_TRANSACTIONS);
     setActiveTab('wheel');
     try {
       localStorage.setItem(LOCAL_STORAGE_PROFILE_KEY, JSON.stringify(DEFAULT_PROFILE));
       localStorage.setItem(LOCAL_STORAGE_LEDGER_KEY, JSON.stringify(DEFAULT_TRANSACTIONS));
+      if (currentUser) {
+        // Reset in DB
+        await updateUserProfileInDb(currentUser.uid, DEFAULT_PROFILE);
+      }
     } catch (e) {
-      console.warn('LocalStorage wipe failed', e);
+      console.warn('LocalStorage/Firestore wipe failed', e);
     }
+    playCoinSound(profile.soundEnabled);
+  };
+
+  // Claim achievement rewards and log transaction
+  const handleClaimAchievement = (achievementId: string, rewardCoins: number, rewardSpins: number) => {
+    const updatedCoins = profile.coins + rewardCoins;
+    const updatedSpins = profile.spinsRemaining + rewardSpins;
+    const updatedClaimed = [...(profile.claimedAchievements || []), achievementId];
+
+    addTransactionAndPersist({
+      type: 'xp_bonus',
+      amount: rewardCoins,
+      label: `Claimed Achievement: ${achievementId.split('_').map(w => w.toUpperCase()).join(' ')}`,
+    });
+
+    updateProfileAndPersist({
+      coins: updatedCoins,
+      spinsRemaining: updatedSpins,
+      claimedAchievements: updatedClaimed,
+    });
+
+    // Also award some XP for claiming an achievement
+    gainXp(50, {
+      ...profile,
+      coins: updatedCoins,
+      spinsRemaining: updatedSpins,
+      claimedAchievements: updatedClaimed,
+    });
+
     playCoinSound(profile.soundEnabled);
   };
 
@@ -211,12 +307,14 @@ export default function App() {
 
     // 3. Update overall user details
     const nextAdCount = (profile.spinsCountSinceLastAd || 0) + 1;
+    const spinsDone = (profile.spinsCompleted || 0) + 1;
     const intermediateProfile = {
       ...profile,
       coins: newCoins,
       spinsRemaining: updatedSpins + earnedSpins,
       lastSpinTime: new Date().toISOString(),
       spinsCountSinceLastAd: nextAdCount,
+      spinsCompleted: spinsDone,
     };
 
     updateProfileAndPersist({
@@ -224,10 +322,16 @@ export default function App() {
       spinsRemaining: updatedSpins + earnedSpins,
       lastSpinTime: new Date().toISOString(),
       spinsCountSinceLastAd: nextAdCount,
+      spinsCompleted: spinsDone,
     });
 
     // Award XP
     gainXp(xpAwarded, intermediateProfile);
+
+    // Increment Online Daily Tournament score in Firestore
+    if (currentUser) {
+      submitTournamentScore(currentUser.uid, profile.username, profile.avatar, 1);
+    }
   };
 
   // Handle Close Result Modal to trigger Ad after every 5 spins
@@ -410,6 +514,27 @@ export default function App() {
         {/* 3. Main Router Content Container */}
         <main className="flex-1 overflow-y-auto px-4 py-4 flex flex-col items-center justify-start bg-radial from-[#070e27] to-[#020510] relative">
           
+          {/* Offline/Local fallback notice banner */}
+          {!isFirebaseAvailable && (
+            <div className="w-full mb-4 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex items-center justify-between gap-3 select-none shrink-0 shadow-[0_2px_8px_rgba(245,158,11,0.05)]">
+              <div className="flex items-center gap-2">
+                <Database className="w-3.5 h-3.5 text-amber-500 shrink-0 animate-pulse" />
+                <span className="text-[10px] font-semibold text-amber-200/90 leading-tight">
+                  Offline Mode: Local Storage active. Set up Firebase to enable online features.
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  playClickSound(profile.soundEnabled);
+                  setShowFirebaseInfoModal(true);
+                }}
+                className="text-[8px] bg-amber-500 hover:brightness-110 text-slate-950 px-2 py-0.5 rounded font-black uppercase tracking-wider shrink-0 transition-all active:scale-95"
+              >
+                SETUP
+              </button>
+            </div>
+          )}
+
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -442,12 +567,72 @@ export default function App() {
                 </div>
               )}
 
+              {activeTab === 'wheel' && (
+                <div className="flex flex-col items-center w-full gap-5">
+                  
+                  {/* Premium Hero Title Accent */}
+                  <div className="text-center">
+                    <p className="text-[10px] text-amber-400 tracking-[0.25em] uppercase font-bold mb-0.5">Premium Lucky Wheel</p>
+                    <h2 className="text-xl font-extrabold bg-gradient-to-b from-white to-slate-300 bg-clip-text text-transparent">Kiran Lucky Spin</h2>
+                  </div>
+
+                  {/* Daily Reward Promo Bar */}
+                  {(() => {
+                    const lastClaim = profile.lastDailyRewardTime ? new Date(profile.lastDailyRewardTime).getTime() : 0;
+                    const oneDayMs = 24 * 60 * 60 * 1000;
+                    const isAvailable = Date.now() - lastClaim >= oneDayMs;
+                    if (isAvailable) {
+                      return (
+                        <button
+                          onClick={() => {
+                            setActiveTab('daily');
+                            playClickSound(profile.soundEnabled);
+                          }}
+                          className="w-full max-w-[340px] px-4 py-2.5 bg-gradient-to-r from-amber-500/20 via-yellow-500/10 to-amber-500/20 border border-amber-500/30 rounded-2xl flex items-center justify-between text-left hover:brightness-110 transition-all animate-pulse"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Gift className="w-5 h-5 text-amber-400 shrink-0" />
+                            <div>
+                              <p className="text-[10px] font-mono text-amber-400 uppercase tracking-wider font-extrabold">DAILY BONUS IS READY</p>
+                              <p className="text-xs font-bold text-white">Claim free virtual coins & spins!</p>
+                            </div>
+                          </div>
+                          <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-2.5 py-1 rounded-lg">CLAIM</span>
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  {/* Wheel Component */}
+                  <SpinWheel
+                    coins={profile.coins}
+                    spinsRemaining={profile.spinsRemaining}
+                    soundEnabled={profile.soundEnabled}
+                    hapticEnabled={profile.hapticEnabled}
+                    onSpinComplete={handleSpinComplete}
+                    onAdRequest={() => setShowAdModal(true)}
+                    onBuySpins={() => setShowBuySpinsModal(true)}
+                    onCloseResultModal={handleCloseResultModal}
+                  />
+                </div>
+              )}
+
               {activeTab === 'daily' && (
                 <DailyReward
                   lastDailyRewardTime={profile.lastDailyRewardTime}
                   dailyRewardStreak={profile.dailyRewardStreak}
                   soundEnabled={profile.soundEnabled}
                   onClaim={handleClaimDailyReward}
+                />
+              )}
+
+              {activeTab === 'tournaments' && (
+                <Tournaments
+                  userId={currentUser ? currentUser.uid : null}
+                  username={profile.username}
+                  avatar={profile.avatar}
+                  soundEnabled={profile.soundEnabled}
                 />
               )}
 
@@ -460,12 +645,68 @@ export default function App() {
                 />
               )}
 
+              {activeTab === 'referrals' && (
+                <div className="w-full flex flex-col items-center gap-4">
+                  {/* Rewards Hub Secondary Tab Selector */}
+                  <div className="w-full max-w-[340px] bg-slate-950/85 p-1 rounded-xl border border-slate-800/80 flex justify-between">
+                    <button
+                      onClick={() => {
+                        setRewardsSubTab('achievements');
+                        playClickSound(profile.soundEnabled);
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                        rewardsSubTab === 'achievements'
+                          ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Award className="w-3.5 h-3.5" />
+                      ACHIEVEMENTS
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRewardsSubTab('referrals');
+                        playClickSound(profile.soundEnabled);
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
+                        rewardsSubTab === 'referrals'
+                          ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      REFER & SHARE
+                    </button>
+                  </div>
+
+                  {rewardsSubTab === 'achievements' ? (
+                    <Achievements
+                      profile={profile}
+                      onClaimAchievement={handleClaimAchievement}
+                    />
+                  ) : (
+                    <Referrals
+                      userId={currentUser ? currentUser.uid : null}
+                      profile={profile}
+                      soundEnabled={profile.soundEnabled}
+                      onUpdateProfile={handleUpdateProfile}
+                      onAddTransaction={addTransactionAndPersist}
+                    />
+                  )}
+                </div>
+              )}
+
               {activeTab === 'profile' && (
                 <Profile
                   profile={profile}
                   transactions={transactions}
                   onUpdateProfile={handleUpdateProfile}
                   onReset={handleResetGameData}
+                  isAnonymous={currentUser ? currentUser.isAnonymous : true}
+                  onSignOut={async () => {
+                    await signOut(auth);
+                  }}
+                  onShowAuth={() => setShowAuthModal(true)}
                 />
               )}
 
@@ -475,7 +716,7 @@ export default function App() {
                   hapticEnabled={profile.hapticEnabled}
                   onUpdateSound={handleUpdateSound}
                   onUpdateHaptic={handleUpdateHaptic}
-                  onClose={() => setActiveTab('wheel')}
+                  onClose={() => setActiveTab('profile')}
                 />
               )}
             </motion.div>
@@ -510,19 +751,19 @@ export default function App() {
             <span className="text-[9px] mt-1 font-medium tracking-wide">Spin Wheel</span>
           </button>
 
-          {/* Daily Reward Tab Button */}
+          {/* Online Tournament Tab Button */}
           <button
-            id="tab-daily"
+            id="tab-tournaments"
             onClick={() => {
-              setActiveTab('daily');
+              setActiveTab('tournaments');
               playClickSound(profile.soundEnabled);
             }}
             className={`flex flex-col items-center p-1.5 transition-all ${
-              activeTab === 'daily' ? 'text-amber-400 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'
+              activeTab === 'tournaments' ? 'text-amber-400 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            <Gift className="w-5 h-5" />
-            <span className="text-[9px] mt-1 font-medium tracking-wide">Daily check</span>
+            <Trophy className="w-5 h-5" />
+            <span className="text-[9px] mt-1 font-medium tracking-wide">Tournament</span>
           </button>
 
           {/* Leaderboard Tab Button */}
@@ -536,8 +777,23 @@ export default function App() {
               activeTab === 'leaderboard' ? 'text-amber-400 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            <Trophy className="w-5 h-5" />
-            <span className="text-[9px] mt-1 font-medium tracking-wide">Leaderboard</span>
+            <Sparkles className="w-5 h-5" />
+            <span className="text-[9px] mt-1 font-medium tracking-wide">Leaders</span>
+          </button>
+
+          {/* Achievements / Referrals Rewards Hub Tab Button */}
+          <button
+            id="tab-rewards"
+            onClick={() => {
+              setActiveTab('referrals');
+              playClickSound(profile.soundEnabled);
+            }}
+            className={`flex flex-col items-center p-1.5 transition-all ${
+              activeTab === 'referrals' ? 'text-amber-400 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            <Award className="w-5 h-5" />
+            <span className="text-[9px] mt-1 font-medium tracking-wide">Rewards</span>
           </button>
 
           {/* Profile Tab Button */}
@@ -552,22 +808,7 @@ export default function App() {
             }`}
           >
             <UserIcon className="w-5 h-5" />
-            <span className="text-[9px] mt-1 font-medium tracking-wide">My stats</span>
-          </button>
-
-          {/* Settings Tab Button */}
-          <button
-            id="tab-settings"
-            onClick={() => {
-              setActiveTab('settings');
-              playClickSound(profile.soundEnabled);
-            }}
-            className={`flex flex-col items-center p-1.5 transition-all ${
-              activeTab === 'settings' ? 'text-amber-400 scale-105 font-bold' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <SettingsIcon className="w-5 h-5" />
-            <span className="text-[9px] mt-1 font-medium tracking-wide">Settings</span>
+            <span className="text-[9px] mt-1 font-medium tracking-wide">Profile</span>
           </button>
         </footer>
       </div>
@@ -708,6 +949,49 @@ export default function App() {
                   FANTASTIC, CLAIM!
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 8. Online Account Auth Portal Modal */}
+      <AnimatePresence>
+        {showAuthModal && (
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[70] flex items-center justify-center p-6 select-none animate-fade-in">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="w-full max-w-sm relative"
+            >
+              <Auth
+                soundEnabled={profile.soundEnabled}
+                onAuthSuccess={() => {
+                  setShowAuthModal(false);
+                }}
+                onClose={() => {
+                  setShowAuthModal(false);
+                }}
+              />
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 9. Firebase Setup Overlay Modal */}
+      <AnimatePresence>
+        {showFirebaseInfoModal && (
+          <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-[80] flex items-center justify-center p-6 select-none">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="w-full max-w-md relative"
+            >
+              <FirebaseSetupScreen
+                soundEnabled={profile.soundEnabled}
+                onClose={() => setShowFirebaseInfoModal(false)}
+              />
             </motion.div>
           </div>
         )}

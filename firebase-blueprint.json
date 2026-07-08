@@ -1,0 +1,65 @@
+{
+  "firestore": {
+    "collections": {
+      "users": {
+        "description": "User profiles, state, achievements, and statistics.",
+        "documents": {
+          "userId": {
+            "username": "string",
+            "avatar": "string",
+            "coins": "number",
+            "spinsRemaining": "number",
+            "xp": "number",
+            "level": "number",
+            "dailyRewardStreak": "number",
+            "lastSpinTime": "string | null",
+            "lastDailyRewardTime": "string | null",
+            "soundEnabled": "boolean",
+            "hapticEnabled": "boolean",
+            "referralCode": "string",
+            "referredBy": "string | null",
+            "lastShareTime": "string | null",
+            "spinsCompleted": "number",
+            "claimedAchievements": "array",
+            "createdAt": "timestamp"
+          }
+        },
+        "subcollections": {
+          "transactions": {
+            "description": "Chronological history of user transactions (coins/spins/xp modifications).",
+            "documents": {
+              "txnId": {
+                "type": "string",
+                "amount": "number",
+                "timestamp": "timestamp",
+                "label": "string"
+              }
+            }
+          }
+        }
+      },
+      "tournaments": {
+        "description": "Daily tournament data and leaderboard entries.",
+        "documents": {
+          "date": {
+            "totalParticipants": "number",
+            "createdAt": "timestamp"
+          }
+        },
+        "subcollections": {
+          "participants": {
+            "description": "Tournament participant records for a specific day.",
+            "documents": {
+              "userId": {
+                "username": "string",
+                "avatar": "string",
+                "score": "number",
+                "lastSpinAt": "timestamp"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

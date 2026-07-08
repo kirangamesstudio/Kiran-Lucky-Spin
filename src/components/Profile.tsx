@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { UserProfile, Transaction } from '../types';
-import { Sparkles, Trophy, Edit3, Save, Coins, Flame, User, Check, Trash2, ShieldCheck, Star } from 'lucide-react';
+import { Sparkles, Trophy, Edit3, Save, Coins, Flame, User, Check, Trash2, ShieldCheck, Star, ShieldAlert, LogOut, Key } from 'lucide-react';
 import { playClickSound } from '../utils/audio';
 
 interface ProfileProps {
@@ -8,6 +8,9 @@ interface ProfileProps {
   transactions: Transaction[];
   onUpdateProfile: (newProfile: Partial<UserProfile>) => void;
   onReset: () => void;
+  isAnonymous?: boolean;
+  onSignOut?: () => void;
+  onShowAuth?: () => void;
 }
 
 const AVAILABLE_AVATARS = [
@@ -19,6 +22,9 @@ export default function Profile({
   transactions,
   onUpdateProfile,
   onReset,
+  isAnonymous = true,
+  onSignOut,
+  onShowAuth,
 }: ProfileProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [tempUsername, setTempUsername] = useState(profile.username);
@@ -125,14 +131,51 @@ export default function Profile({
               </div>
             </div>
           ) : (
-            <div>
-              <h3 className="text-lg font-black text-white flex items-center justify-center gap-1">
+            <div className="flex flex-col items-center">
+              <h3 className="text-lg font-black text-white flex items-center justify-center gap-1.5">
                 {profile.username}
-                <ShieldCheck className="w-4 h-4 text-amber-400 fill-amber-400/20 shrink-0" />
+                {isAnonymous ? (
+                  <span className="text-[8px] bg-red-500/20 text-red-400 border border-red-500/30 font-mono px-2 py-0.5 rounded-full uppercase tracking-wider">Guest</span>
+                ) : (
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 fill-emerald-400/20 shrink-0" />
+                )}
               </h3>
               <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest mt-0.5">
-                Kiran Lucky Spin Player
+                {isAnonymous ? 'Offline Guest Session' : 'Secured Cloud Account'}
               </p>
+
+              {/* Account Security CTA Call to Actions */}
+              {isAnonymous ? (
+                <div className="mt-3.5 max-w-xs bg-red-500/5 border border-red-500/15 p-3 rounded-2xl flex flex-col gap-2 text-left">
+                  <div className="flex gap-2 text-red-400 items-start">
+                    <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span className="text-[10px] leading-tight font-medium">Protect your progress! Guest profiles can be wiped on browser cache resets. Connect a permanent account to save your balance cloud-side.</span>
+                  </div>
+                  <button
+                    id="profile-connect-btn"
+                    onClick={onShowAuth}
+                    className="w-full py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:brightness-110 text-slate-950 font-black text-[9px] rounded-lg tracking-wider flex items-center justify-center gap-1 shadow-md active:scale-95 transition-all"
+                  >
+                    <Key className="w-3 h-3" />
+                    SECURE ACCOUNT NOW
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-3.5 max-w-xs bg-emerald-500/5 border border-emerald-500/15 p-2.5 rounded-2xl flex items-center justify-between gap-5 text-left">
+                  <span className="text-[10px] text-slate-400 font-mono leading-tight">Your coins and standing are protected cloud-side.</span>
+                  <button
+                    id="profile-logout-btn"
+                    onClick={() => {
+                      playClickSound(profile.soundEnabled);
+                      if (onSignOut) onSignOut();
+                    }}
+                    className="py-1.5 px-3 bg-slate-900 border border-slate-800 hover:border-red-500/30 text-red-400 text-[9px] font-bold rounded-lg flex items-center gap-1 shrink-0 active:scale-95 transition-all"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    SIGN OUT
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
