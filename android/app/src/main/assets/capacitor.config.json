@@ -1,0 +1,13 @@
+{
+	"appId": "com.kirangames.luckyspin",
+	"appName": "Kiran Lucky Spin",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"AdMob": {
+			"androidAdAppId": "ca-app-pub-3940256099942544~3347511713"
+		}
+	}
+}
