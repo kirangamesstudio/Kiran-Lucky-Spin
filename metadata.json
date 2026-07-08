@@ -1,0 +1,6 @@
+{
+  "name": "Kiran Lucky Spin",
+  "description": "Premium virtual lucky spin wheel game with daily rewards, user profile, settings, leaderboard, and interactive simulated ads by Kiran Games Studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
